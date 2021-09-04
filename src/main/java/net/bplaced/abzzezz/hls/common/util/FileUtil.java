@@ -1,6 +1,9 @@
 package net.bplaced.abzzezz.hls.common.util;
 
 import java.io.*;
+import java.net.URL;
+import java.net.URLConnection;
+import java.nio.channels.Channels;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 
@@ -19,4 +22,13 @@ public class FileUtil {
 			e.printStackTrace();
 		}
 	}
+
+	public static void writeToFile(final URLConnection in, final File out) {
+		try(final FileOutputStream fos = new FileOutputStream(out)) {
+			fos.getChannel().transferFrom(Channels.newChannel(in.getInputStream()), 0, Long.MAX_VALUE);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+
 }

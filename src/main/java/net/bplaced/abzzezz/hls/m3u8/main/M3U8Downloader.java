@@ -1,34 +1,30 @@
 package net.bplaced.abzzezz.hls.m3u8.main;
 
 
-import net.bplaced.abzzezz.hls.common.util.FileUtil;
-import net.bplaced.abzzezz.hls.m3u8.util.HttpsUtils;
+import net.bplaced.abzzezz.hls.m3u8.util.Crypto;
 import net.bplaced.abzzezz.hls.m3u8.util.LineType;
+import net.bplaced.abzzezz.hls.m3u8.util.Node;
 import net.bplaced.abzzezz.hls.m3u8.util.URLUtil;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.channels.Channels;
-import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
+import java.net.URLConnection;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * "Original" Created by @author Yan ( https://blog.csdn.net/blueboyhi/article/details/40107683)
  * Remains of this code can be found in the
- *
- * @see HttpsUtils
+ * <p>
  * all the other code has been changed for the better, I searched long for a program like this but unfortunately something like this is nowhere to be found
  * this m3u8 downloader collects all the m3u8 nodes and gets all ts files
  */
 public class M3U8Downloader {
 
-    private final File workRootDir;
-    private final File tsWorkDir;
+    public static final String KEY = "#EXT-X-KEY";
+
     private final File m3u8WorkDir;
     private final File outDir;
 
@@ -36,23 +32,22 @@ public class M3U8Downloader {
 
     private final String[][] headers; //Request headers when grabbing files
 
-    private final List<String> tsFiles = new ArrayList<>(); //List of all ts-files to download & merge
-    private final List<String> visitedM3U8 = new ArrayList<>(); //List of visited m3u8 nodes, so they can be ignored and the algorithm does not loop infinitely
+    private final List<String> tsURLs = new ArrayList<>(); //List of all ts-files to download & merge
+    private final List<String> visitedNodes = new ArrayList<>(); //List of visited m3u8 nodes, so they can be ignored and the algorithm does not loop infinitely
 
+
+    private Crypto crypto;
 
     public M3U8Downloader(final String fileName, final String masterURL, final File workRootDir0, final String[]... headers) {
         this.fileName = fileName;
         this.masterURL = masterURL;
         this.headers = headers;
 
-        this.workRootDir = new File(workRootDir0, fileName);
+        File workRootDir = new File(workRootDir0, fileName);
         if (!workRootDir.exists()) workRootDir.mkdirs();
 
         this.m3u8WorkDir = new File(workRootDir, "m3u8");
         if (!m3u8WorkDir.exists()) m3u8WorkDir.mkdirs();
-
-        this.tsWorkDir = new File(workRootDir, "ts");
-        if (!tsWorkDir.exists()) tsWorkDir.mkdirs();
 
         this.outDir = new File(workRootDir, "mp4");
         if (!outDir.exists()) outDir.mkdirs();
@@ -66,10 +61,7 @@ public class M3U8Downloader {
     public void downloadM3U8() throws Exception {
         final int lastSlash = masterURL.lastIndexOf("/");
         final int m3u8Extension = masterURL.lastIndexOf(".m3u8");
-        final String urlPre = masterURL.substring(0, lastSlash + 1);
         final String fileName = masterURL.substring(lastSlash + 1, m3u8Extension);
-
-        final String master = HttpsUtils.get(masterURL, headers);
 
         final File m3u8File = new File(m3u8WorkDir, fileName + ".m3u8");
 
@@ -77,65 +69,66 @@ public class M3U8Downloader {
             m3u8File.createNewFile();
         }
 
-        processM3U8(masterURL, null); //Start looking for nodes
+        this.processMaster(masterURL); //Start looking for nodes
+        this.loadTS(); //Load ts
     }
 
-    /**
-     * Loads all the ts-files and downloads them
-     * @throws Exception url / file
-     */
-    private void loadTS() throws Exception {
-        //Load ts files...
-        System.out.println("Downloading ts-files");
+    private void processMaster(final String url) throws Exception {
+        final String baseURL = getBaseURL(url); //Base master url
+        final String[] content = URLUtil.collectArray(URLUtil.createHTTPSURLConnection(masterURL, headers)); //Content of master
+        final Node n0 = new Node(url, null); //N0 node (root)
 
-        for (int i = 0; i < tsFiles.size(); i++) {
-            System.out.printf("Downloading %d out of %d%n", i + 1, tsFiles.size());
-            final File tsFile = new File(tsWorkDir, i + ".ts");
-            if (tsFile.exists()) continue;
+        this.crypto = new Crypto(baseURL); //Initialize crypto
 
-            FileUtil.writeToFile(tsFile, URLUtil.collectLines(URLUtil.createHTTPURLConnection(tsFiles.get(i), 0, 0, headers), "\n"), StandardCharsets.UTF_8);
+        visitedNodes.add(n0.getContent()); //add to visited node
+
+        for (final String line : content) {
+            System.out.println("Checking line from master");
+
+            if (line.startsWith(KEY)) { //Update key
+                crypto.updateKeyString(line);
+            } else if (!line.isEmpty() && !line.startsWith("#")) { //process line if not empty
+                final Node nNext = new Node(line, n0);
+                if (!visitedNodes.contains(nNext.getContent()))
+                    processNode(nNext);
+            }
         }
-
-        mergeTsFiles();
     }
 
-    private void processM3U8(final String url, final String previousNode) throws Exception {
-        final String m3u8 = HttpsUtils.get(url, headers); //Get m3u8
+    private void processNode(final Node node) throws Exception {
+        final String url = node.getContent();
+        final String[] content = URLUtil.collectArray(URLUtil.createHTTPSURLConnection(url, headers));
+        final String baseURL = getBaseURL(url);
 
-        final int lastSlash = url.lastIndexOf("/");
-        final String fileName = url.substring(lastSlash + 1);
-
-        FileUtil.writeToFile(new File(m3u8WorkDir, fileName), m3u8, StandardCharsets.UTF_8);
-
-        System.out.println("M3U8 Saved:" + url);
-
-        final String[] lines = m3u8.split("[\\r\\n]"); //Split into individual lines
-        //Loop through all lines, skip m3u8 instructions
-        for (String line : lines) {
-            if (line.startsWith("#")) continue;
+        for (final String line : content) {
+            if (line.startsWith("#")) continue; //skip instructions
 
             final LineType lineType = checkLine(line.replaceAll("[\r\n]+", "")); //Determine the line type
             switch (lineType) {
-                case TS -> { //If the line has a "ts" file extension add the ts file to the arraylist
-                    if (!tsFiles.contains(line)) {
-                        final String baseURL = url.substring(0, url.lastIndexOf("/") + 1);
-                        tsFiles.add(baseURL + line);
-                        System.out.println("Adding ts file: " + line);
+                case TS -> {
+                    final String tsURL = baseURL + line;
+                    if (!tsURLs.contains(tsURL)) {
+                        tsURLs.add(tsURL);
+                        System.out.println("Adding segment: " + tsURL);
                     }
                 }
                 case M3U8 -> {
-                    if (!visitedM3U8.contains(line))
-                        processM3U8(line, url); //Process the next coming m3u8 file
+                    final Node n1 = new Node(line, node);
+                    if (!visitedNodes.contains(n1.getContent())) {
+                        processNode(n1);
+                    }
                 }
             }
         }
-        //If the previous is not null visit the previous node, this is inefficient but will work for now
-        //TODO: Work out more efficient method
-        visitedM3U8.add(url);
-        if (previousNode != null)
-            processM3U8(previousNode, null);
-        else loadTS();
+
+        visitedNodes.add(node.getContent()); //Add to visited notes
+        System.out.printf("Node %s was visited falling back to previous%n", node.getContent());
+
+        //Visit parents
+        if (node.getPrevious() != null) //go to previous
+            processNode(node.getPrevious());
     }
+
 
     private LineType checkLine(String line) {
         final int lineEnd = line.lastIndexOf(".");
@@ -148,37 +141,48 @@ public class M3U8Downloader {
         };
     }
 
-    /**
-     * Merges all .ts files in the ts work directory
-     */
-    public void mergeTsFiles() {
-        System.out.println("Merging ts-files");
-        File mp4File = new File(outDir, fileName + ".mp4");
+    private String getBaseURL(final String url) {
+        return url.substring(0, url.lastIndexOf("/") + 1);
+    }
 
-        if (!mp4File.exists()) {
+    /**
+     * Loads all the ts-files and downloads them
+     *
+     * @throws Exception url / file
+     */
+    private void loadTS() throws Exception {
+        //Load ts files...
+        System.out.println("Downloading & merging ts-files");
+        final byte[] buffer = new byte[512]; //Buffer
+
+        final File outputFile = new File(outDir, fileName + ".mp4");
+
+        if (!outputFile.exists()) {
             try {
-                mp4File.createNewFile();
+                outputFile.createNewFile();
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
 
-        try (FileOutputStream fileOutputStream = new FileOutputStream(mp4File)) {
-            Arrays.stream(Objects.requireNonNull(tsWorkDir.listFiles()))
-                    .sorted()
-                    .forEach(file -> {
-                        System.out.println("Merging " + file.getName());
+        try (final FileOutputStream fileOutputStream = new FileOutputStream(outputFile)) {
+            for (int i = 0; i < tsURLs.size(); i++) { //loop through all ts-files
+                System.out.printf("Writing %d out of %d%n", i + 1, tsURLs.size());
 
-                        try (FileInputStream fileInputStream = new FileInputStream(file)) {
-                            fileOutputStream.getChannel().transferFrom(Channels.newChannel(fileInputStream), 0, Long.MAX_VALUE);
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
-                    });
-        } catch (IOException e) {
-            e.printStackTrace();
+                final URLConnection connection = URLUtil.createHTTPURLConnection(tsURLs.get(i), 0, 0, headers);
+                InputStream inputStream = crypto.hasKey() ?
+                        crypto.wrapInputStream(connection.getInputStream()) :
+                        connection.getInputStream();
+                //Read the input stream & write to file output stream
+                int read;
+                while ((read = inputStream.read(buffer)) >= 0) {
+                    fileOutputStream.write(buffer, 0, read);
+                }
+                inputStream.close();
+                fileOutputStream.flush();
+                System.out.printf("Done writing %d out of %d%n", i + 1, tsURLs.size());
+            }
         }
-        System.out.println("Done merging...");
+        System.out.println("Done merging");
     }
-
 }

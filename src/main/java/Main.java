@@ -8,7 +8,7 @@ public class Main {
 
     public static void main(String[] args) throws IOException {
 
-        final String url = "https://eerht.artdesigncdn.net/_v10/751c33863806cf63f9b11d9facb4d8bf2030ad6cbc1ea88d2005b5fb673ad4ce618f4e6da57e0b5a65575b33a4a0c91da6888e352bbef005e79eaea4b9ab3546211e5baed400146663044f400c244c89009a151fc20d2396c0fc38b8106161d14672c405ce4309ed543eb9faccc9d3e162304566b7677732c0c9d985857d6b2d/720/index.m3u8";
+        final String url = "";
         final File outDir = new File("D:\\merger");
         if (!outDir.exists()) outDir.mkdir();
 
